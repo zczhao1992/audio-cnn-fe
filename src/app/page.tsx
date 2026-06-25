@@ -1,36 +1,220 @@
-import Link from "next/link";
+"use client";
+
+import { useState } from "react";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Progress } from "@/components/ui/progress";
+import { ESC50_EMOJI_MAP, ESC50_CN_MAP } from "./config";
+import ColorScale from "@/components/ColorScale";
+import FeatureMap from "@/components/FeatureMap";
+
+interface Prediction {
+  class: string;
+  confidence: number;
+}
+interface LayerData {
+  shape: number[];
+  values: number[][];
+}
+
+interface VisualizationData {
+  [layerName: string]: LayerData;
+}
+
+interface WaveformData {
+  values: number[];
+  sample_rate: number;
+  duration: number;
+}
+
+interface ApiResponse {
+  predictions: Prediction[];
+  visualization: VisualizationData;
+  input_spectrogram: LayerData;
+  waveform: WaveformData;
+}
+
+function splitLayers(visualization: VisualizationData) {
+  const main: [string, LayerData][] = [];
+  const internals: Record<string, [string, LayerData][]> = {};
+
+  for (const [name, data] of Object.entries(visualization)) {
+    if (!name.includes(".")) {
+      main.push([name, data]);
+    } else {
+      const [parent] = name.split(".");
+      if (parent === undefined) continue;
+
+      if (!internals[parent]) internals[parent] = [];
+      internals[parent].push([name, data]);
+    }
+  }
+
+  return { main, internals };
+}
+
+const getEmojiForClass = (className: string): string => {
+  return ESC50_EMOJI_MAP[className] || "🔈";
+};
 
 export default function HomePage() {
+  const [vizData, setVizData] = useState<ApiResponse | null>(null);
+  const [isLoading, setIsLoading] = useState(false);
+  const [fileName, setFileName] = useState("");
+  const [error, setError] = useState<string | null>(null);
+
+  const handleFileChange = async (
+    event: React.ChangeEvent<HTMLInputElement>,
+  ) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    setFileName(file.name);
+    setIsLoading(true);
+    setError(null);
+    setVizData(null);
+
+    const reader = new FileReader();
+    reader.readAsArrayBuffer(file);
+    reader.onload = async () => {
+      try {
+        const arrayBuffer = reader.result as ArrayBuffer;
+        const base64String = btoa(
+          new Uint8Array(arrayBuffer).reduce(
+            (data, byte) => data + String.fromCharCode(byte),
+            "",
+          ),
+        );
+
+        const response = await fetch(
+          process.env.NEXT_PUBLIC_AUDIOCNN_API_URL as string,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ audio_data: base64String }),
+          },
+        );
+
+        if (!response.ok) {
+          throw new Error(`API error ${response.statusText}`);
+        }
+
+        const data: ApiResponse = await response.json();
+        setVizData(data);
+      } catch (err) {
+        setError(
+          err instanceof Error ? err.message : "An unknown error occured",
+        );
+      } finally {
+        setIsLoading(false);
+      }
+    };
+    reader.onerror = () => {
+      setError("Failed ot read the file.");
+      setIsLoading(false);
+    };
+  };
+
+  const { main, internals } = vizData
+    ? splitLayers(vizData?.visualization)
+    : { main: [], internals: {} };
+
   return (
-    <main className="flex min-h-screen flex-col items-center justify-center bg-gradient-to-b from-[#2e026d] to-[#15162c] text-white">
-      <div className="container flex flex-col items-center justify-center gap-12 px-4 py-16">
-        <h1 className="text-5xl font-extrabold tracking-tight text-white sm:text-[5rem]">
-          Create <span className="text-[hsl(280,100%,70%)]">T3</span> App
-        </h1>
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 md:gap-8">
-          <Link
-            className="flex max-w-xs flex-col gap-4 rounded-xl bg-white/10 p-4 text-white hover:bg-white/20"
-            href="https://create.t3.gg/en/usage/first-steps"
-            target="_blank"
-          >
-            <h3 className="text-2xl font-bold">First Steps →</h3>
-            <div className="text-lg">
-              Just the basics - Everything you need to know to set up your
-              database and authentication.
+    <main className="min-h-screen bg-stone-50 p-8">
+      <div className="mx-auto max-w-full">
+        <div className="mb-12 text-center">
+          <h1 className="mb-4 text-4xl font-light tracking-tight text-stone-900">
+            CNN音频分类
+          </h1>
+
+          <p className="text-md mb-8 text-stone-600">
+            请上传 WAV 文件，可查看模型的预测输出和特征图。
+          </p>
+
+          <div className="flex flex-col items-center">
+            <div className="relative inline-block">
+              <input
+                type="file"
+                accept=".wav"
+                id="file-upload"
+                onChange={handleFileChange}
+                disabled={isLoading}
+                className="absolute inset-0 w-full cursor-pointer opacity-0"
+              />
+              <Button
+                disabled={isLoading}
+                className="border-stone-300"
+                variant="outline"
+                size="lg"
+              >
+                {isLoading ? "分析中..." : "选择文件"}
+              </Button>
             </div>
-          </Link>
-          <Link
-            className="flex max-w-xs flex-col gap-4 rounded-xl bg-white/10 p-4 text-white hover:bg-white/20"
-            href="https://create.t3.gg/en/introduction"
-            target="_blank"
-          >
-            <h3 className="text-2xl font-bold">Documentation →</h3>
-            <div className="text-lg">
-              Learn more about Create T3 App, the libraries it uses, and how to
-              deploy it.
-            </div>
-          </Link>
+            {fileName && (
+              <Badge
+                variant="secondary"
+                className="mt-4 bg-stone-200 text-stone-700"
+              >
+                {fileName}
+              </Badge>
+            )}
+          </div>
         </div>
+
+        {error && (
+          <Card className="mb-8 border-red-200 bg-red-50">
+            <CardContent>
+              <p className="text-red-600">Error: {error}</p>
+            </CardContent>
+          </Card>
+        )}
+
+        {vizData && (
+          <div className="space-y-8">
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-stone-900">主要预测</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="space-y-3">
+                  {vizData.predictions.slice(0, 3).map((pred, i) => (
+                    <div key={pred.class} className="space-y-2">
+                      <div className="flex items-center justify-between">
+                        <div className="text-md font-medium text-stone-700">
+                          {getEmojiForClass(pred.class)}{" "}
+                          <span>{ESC50_CN_MAP[pred.class] || ""}</span>
+                        </div>
+                        <Badge variant={i === 0 ? "default" : "secondary"}>
+                          {(pred.confidence * 100).toFixed(1)}%
+                        </Badge>
+                      </div>
+                      <Progress value={pred.confidence * 100} className="h-2" />
+                    </div>
+                  ))}
+                </div>
+              </CardContent>
+            </Card>
+
+            <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+              <Card>
+                <CardHeader className="text-stone-900">
+                  <CardTitle className="text-stone-900">输入频谱图</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <FeatureMap
+                    data={vizData.input_spectrogram.values}
+                    title={`${vizData.input_spectrogram.shape.join(" x ")}`}
+                    spectrogram
+                  />
+                  <div className="mt-5 flex justify-end">
+                    <ColorScale width={200} height={16} min={-1} max={1} />
+                  </div>
+                </CardContent>
+              </Card>
+            </div>
+          </div>
+        )}
       </div>
     </main>
   );
